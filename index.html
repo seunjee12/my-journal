@@ -1185,25 +1185,24 @@ function handleImage(event) {
   reader.readAsDataURL(file);
 }
 
-function saveEntry() {
+async function saveEntry() {
   const title = document.getElementById('entryTitle').value.trim();
   const content = document.getElementById('entryContent').value.trim();
   const date = document.getElementById('entryDate').value;
 
   if (!content) { showToast('내용을 입력해주세요'); return; }
 
-  const entries = getEntries();
   const entry = {
     id: Date.now(),
     date, title: title || '무제',
     content, mood: selectedMood,
     weather: selectedWeather,
     keywords: [...currentKeywords],
-    image: imageData
+    image: imageData || ''
   };
 
-  entries.push(entry);
-  saveEntries(entries);
+  showToast('저장 중 —');
+  await saveEntryToSheet(entry);
 
   // reset
   document.getElementById('entryTitle').value = '';
@@ -1220,18 +1219,50 @@ function saveEntry() {
   showToast('Saved —');
 }
 
-// ── DATA ──
-function getEntries() {
-  return JSON.parse(localStorage.getItem('journalEntries') || '[]');
+// ── DATA (Google Sheets) ──
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxEWAS3kftYa3wzoFcz5uQ8TQbaAiATJHTC1Prw0__Pup9-BTB9AVEbhVPCY4ub2drkqQ/exec';
+let cachedEntries = null;
+
+async function getEntries() {
+  if (cachedEntries) return cachedEntries;
+  try {
+    const res = await fetch(SCRIPT_URL);
+    const data = await res.json();
+    cachedEntries = data.filter(r => r.id);
+    return cachedEntries;
+  } catch(e) {
+    return JSON.parse(localStorage.getItem('journalEntries_backup') || '[]');
+  }
 }
 
-function saveEntries(entries) {
-  localStorage.setItem('journalEntries', JSON.stringify(entries));
+async function saveEntryToSheet(entry) {
+  await fetch(SCRIPT_URL, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'save', ...entry })
+  });
+  cachedEntries = null;
+  // backup
+  const backup = JSON.parse(localStorage.getItem('journalEntries_backup') || '[]');
+  backup.push(entry);
+  localStorage.setItem('journalEntries_backup', JSON.stringify(backup));
+}
+
+async function deleteEntryFromSheet(id) {
+  await fetch(SCRIPT_URL, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'delete', id })
+  });
+  cachedEntries = null;
+  const backup = JSON.parse(localStorage.getItem('journalEntries_backup') || '[]');
+  localStorage.setItem('journalEntries_backup', JSON.stringify(backup.filter(e => e.id !== id)));
 }
 
 // ── ENTRIES LIST ──
-function renderEntries() {
-  const entries = getEntries().sort((a,b) => new Date(b.date) - new Date(a.date));
+async function renderEntries() {
+  const grid = document.getElementById('entriesGrid');
+  const count = document.getElementById('entriesCount');
+  grid.innerHTML = `<div class="empty-state"><p>불러오는 중 —</p></div>`;
+  const entries = (await getEntries()).sort((a,b) => new Date(b.date) - new Date(a.date));
   const grid = document.getElementById('entriesGrid');
   const count = document.getElementById('entriesCount');
   count.textContent = entries.length + ' entries';
@@ -1257,11 +1288,11 @@ function renderEntries() {
 }
 
 // ── CALENDAR ──
-function renderCalendar() {
+async function renderCalendar() {
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   document.getElementById('calMonthLabel').innerHTML = `${months[currentMonth]} <span>${currentYear}</span>`;
 
-  const entries = getEntries();
+  const entries = await getEntries();
   const entryMap = {};
   entries.forEach(e => {
     if (!entryMap[e.date]) entryMap[e.date] = [];
@@ -1307,8 +1338,8 @@ function changeMonth(dir) {
   renderCalendar();
 }
 
-function calCellClick(dateStr) {
-  const entries = getEntries().filter(e => e.date === dateStr);
+async function calCellClick(dateStr) {
+  const entries = (await getEntries()).filter(e => e.date === dateStr);
   if (entries.length === 1) { openEntry(entries[0].id); return; }
   if (entries.length > 1) { openEntry(entries[0].id); return; }
   // no entry — jump to write with that date
@@ -1317,8 +1348,9 @@ function calCellClick(dateStr) {
 }
 
 // ── MODAL ──
-function openEntry(id) {
-  const entry = getEntries().find(e => e.id === id);
+async function openEntry(id) {
+  const entries = await getEntries();
+  const entry = entries.find(e => String(e.id) === String(id));
   if (!entry) return;
   openEntryId = id;
 
@@ -1343,10 +1375,10 @@ function closeModal() {
   openEntryId = null;
 }
 
-function deleteEntry() {
+async function deleteEntry() {
   if (!openEntryId) return;
-  const entries = getEntries().filter(e => e.id !== openEntryId);
-  saveEntries(entries);
+  showToast('삭제 중 —');
+  await deleteEntryFromSheet(openEntryId);
   closeModal();
   renderEntries();
   renderCalendar();
